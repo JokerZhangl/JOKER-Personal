@@ -1,0 +1,409 @@
+using System.Collections;
+using System.Collections.Generic;
+using TMPro;
+using Unity.VisualScripting;
+using UnityEngine;
+
+[RequireComponent(typeof(CharacterController))]
+public class PlayerPCMove : MonoBehaviour
+{
+
+ // 可选，用于更平滑的相机控制
+
+
+    [Header("移动设置")]
+    [SerializeField] private float moveSpeed = 5f;
+    [SerializeField] private float sprintSpeed = 8f;
+    [SerializeField] private float rotationSpeed = 10f;
+    [SerializeField] private float jumpHeight = 2f;
+    [SerializeField] private float gravity = -20f;
+
+    [Header("相机设置")]
+    [SerializeField] private Transform cameraTransform;
+    [SerializeField] private float cameraDistance = 5f;
+    [SerializeField] private float cameraHeight = 2f;
+    [SerializeField] private float cameraRotationSpeed = 2f;
+    [SerializeField] private float minVerticalAngle = -30f;
+    [SerializeField] private float maxVerticalAngle = 60f;
+
+    [Header("输入设置")]
+    [SerializeField] private string horizontalAxis = "Horizontal";
+    [SerializeField] private string verticalAxis = "Vertical";
+    [SerializeField] private KeyCode jumpKey = KeyCode.Space;
+    [SerializeField] private KeyCode sprintKey = KeyCode.LeftShift;
+    [SerializeField] private bool lockCursor = true;
+
+    [Header("物理检测")]
+    [SerializeField] private LayerMask groundMask = -1;
+    [SerializeField] private float groundCheckDistance = 0.2f;
+    [SerializeField] private float slopeLimit = 45f;
+
+    [SerializeField] Transform CurrentCar;
+
+    // 组件引用
+    private CharacterController characterController;
+    private Animator animator; // 可选
+
+    // 移动相关
+    private Vector3 velocity;
+    private Vector3 moveDirection;
+    private float currentSpeed;
+    private bool isGrounded;
+    private bool isSprinting;
+
+    // 相机相关
+    private float cameraHorizontalAngle = 0f;
+    private float cameraVerticalAngle = 20f;
+    private Vector3 cameraOffset;
+    private bool isCameraControlling = false;
+
+    // 输入
+    private float inputHorizontal;
+    private float inputVertical;
+    public TextMeshProUGUI Score;
+    public int NowScore = 0;
+    public TextMeshProUGUI Messge;
+    public TextMeshProUGUI button;
+    public GameObject popUI;
+    public GameObject imge;
+
+    float WaitTime = 0.5f;
+
+    float Timer =0;
+
+
+
+    // Start is called before the first frame update
+
+
+    void Awake()
+    {
+      
+        
+       
+        characterController = GetComponent<CharacterController>();
+        animator = GetComponent<Animator>();
+
+        // 如果没有指定相机，使用主相机
+        if (cameraTransform == null && Camera.main != null)
+        {
+            cameraTransform = Camera.main.transform;
+        }
+
+        // 初始化相机位置
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+        // 锁定光标
+
+    }
+
+    void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.E) )
+        {
+            if(Cursor.visible == false)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+            }
+            else
+            {
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+            }
+        }
+      
+
+
+        GetInput();
+        HandleCameraRotation();
+        HandleMovement();
+        HandleJump();
+        ApplyGravity();
+
+        // 移动角色
+        MoveCharacter();
+
+        // 更新相机位置
+        UpdateCameraPosition();
+        GetCar();
+
+        // 更新动画（可选）
+
+    }
+
+    void GetInput()
+    {
+        inputHorizontal = Input.GetAxis(horizontalAxis);
+        inputVertical = Input.GetAxis(verticalAxis);
+        isSprinting = Input.GetKey(sprintKey);
+
+        // 鼠标右键控制相机
+        isCameraControlling = Input.GetMouseButton(1) ||
+                             Cursor.lockState == CursorLockMode.Locked;
+    }
+
+    void HandleCameraRotation()
+    {
+        if (!isCameraControlling) return;
+
+        // 获取鼠标输入
+        float mouseX = Input.GetAxis("Mouse X") * cameraRotationSpeed;
+        float mouseY = Input.GetAxis("Mouse Y") * cameraRotationSpeed;
+
+        // 水平旋转（围绕Y轴）
+        cameraHorizontalAngle += mouseX;
+
+        // 垂直旋转（限制角度）
+        cameraVerticalAngle -= mouseY;
+        cameraVerticalAngle = Mathf.Clamp(cameraVerticalAngle, minVerticalAngle, maxVerticalAngle);
+
+        // 可选：Q/E键旋转相机
+        if (Input.GetKey(KeyCode.Q))
+        {
+            cameraHorizontalAngle -= cameraRotationSpeed * Time.deltaTime * 50f;
+        }
+        if (Input.GetKey(KeyCode.E))
+        {
+            cameraHorizontalAngle += cameraRotationSpeed * Time.deltaTime * 50f;
+        }
+
+        // 鼠标滚轮调整距离
+        float scroll = Input.GetAxis("Mouse ScrollWheel");
+        if (scroll != 0)
+        {
+            cameraDistance = Mathf.Clamp(cameraDistance - scroll * 5f, 2f, 10f);
+        }
+    }
+
+    void HandleMovement()
+    {
+        // 计算移动方向（基于相机方向）
+        Vector3 cameraForward = cameraTransform.forward;
+        Vector3 cameraRight = cameraTransform.right;
+
+        // 确保相机方向在水平面
+        cameraForward.y = 0;
+        cameraRight.y = 0;
+        cameraForward.Normalize();
+        cameraRight.Normalize();
+
+        // 计算移动方向
+        moveDirection = (cameraForward * inputVertical + cameraRight * inputHorizontal).normalized;
+
+        // 设置移动速度
+        currentSpeed = isSprinting ? sprintSpeed : moveSpeed;
+
+        // 如果有移动输入，旋转角色朝向移动方向
+        if (moveDirection.magnitude > 0.1f)
+        {
+            Quaternion targetRotation = Quaternion.LookRotation(moveDirection);
+            transform.rotation = Quaternion.Slerp(
+                transform.rotation,
+                targetRotation,
+                rotationSpeed * Time.deltaTime
+            );
+        }
+    }
+
+    void HandleJump()
+    {
+        if (isGrounded && Input.GetKeyDown(jumpKey))
+        {
+            velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
+
+            // 跳跃动画
+            if (animator != null)
+            {
+                animator.SetTrigger("Jumping");
+            }
+          
+        }
+    }
+
+    void ApplyGravity()
+    {
+        // 检查是否在地面
+        isGrounded = characterController.isGrounded ||
+                    Physics.CheckSphere(transform.position, 0.2f, groundMask);
+
+        // 应用重力
+        if (isGrounded && velocity.y < 0)
+        {
+            velocity.y = -2f; // 轻微向下的力以确保接地
+        }
+        else
+        {
+            velocity.y += gravity * Time.deltaTime;
+        }
+    }
+
+    void MoveCharacter()
+    {
+       
+        
+        
+        // 计算最终移动向量
+        Vector3 moveVector = moveDirection * currentSpeed * Time.deltaTime;
+        if (Mathf.Abs( moveVector.x) > 0.0001f)
+        {
+            animator.SetBool("Idle", false);
+            if (isSprinting)
+            {
+                animator.SetBool("Running", true);
+                animator.SetBool("Walking", false);
+
+            }
+            else
+            {
+                animator.SetBool("Running", false);
+                animator.SetBool("Walking", true);
+            }
+        }
+        else
+        {
+            animator.SetBool("Running", false);
+            animator.SetBool("Walking", false);
+            animator.SetBool("Idle", true);
+        }
+        moveVector.y = velocity.y * Time.deltaTime;
+
+        // 移动角色
+        characterController.Move(moveVector);
+    }
+
+    void UpdateCameraPosition(bool instant = false)
+    {
+        if (cameraTransform == null) return;
+
+        // 计算相机偏移（球坐标）
+        float horizontalRad = cameraHorizontalAngle * Mathf.Deg2Rad;
+        float verticalRad = cameraVerticalAngle * Mathf.Deg2Rad;
+
+        cameraOffset.x = Mathf.Sin(horizontalRad) * Mathf.Cos(verticalRad) * cameraDistance;
+        cameraOffset.z = Mathf.Cos(horizontalRad) * Mathf.Cos(verticalRad) * cameraDistance;
+        cameraOffset.y = Mathf.Sin(verticalRad) * cameraDistance + cameraHeight;
+
+        // 计算目标位置
+        Vector3 targetPosition = transform.position + cameraOffset;
+
+        // 相机碰撞检测
+        RaycastHit hit;
+        Vector3 rayDirection = (targetPosition - transform.position).normalized;
+        float rayDistance = cameraDistance + 0.5f;
+
+        if (Physics.Raycast(transform.position, rayDirection, out hit, rayDistance))
+        {
+            if (!hit.collider.CompareTag("Player"))
+            {
+                targetPosition = hit.point - rayDirection * 0.3f;
+            }
+        }
+
+        // 平滑移动相机
+        if (instant)
+        {
+            cameraTransform.position = targetPosition;
+        }
+        else
+        {
+            cameraTransform.position = Vector3.Lerp(
+                cameraTransform.position,
+                targetPosition,
+                10f * Time.deltaTime
+            );
+        }
+
+        // 相机看向角色（稍微看向角色上方）
+        Vector3 lookAtTarget = transform.position + Vector3.up * cameraHeight * 0.5f;
+        cameraTransform.LookAt(lookAtTarget);
+    }
+
+
+
+
+    // 公共方法
+    public void SetCameraTransform(Transform newCameraTransform)
+    {
+        cameraTransform = newCameraTransform;
+    }
+
+    public void SetMoveSpeed(float newSpeed)
+    {
+        moveSpeed = newSpeed;
+    }
+
+    public void SetSprintSpeed(float newSpeed)
+    {
+        sprintSpeed = newSpeed;
+    }
+
+    public Vector3 GetMoveDirection()
+    {
+        return moveDirection;
+    }
+
+    public bool IsMoving()
+    {
+        return moveDirection.magnitude > 0.1f;
+    }
+
+    public bool IsSprinting()
+    {
+        return isSprinting;
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        if (characterController == null) return;
+
+        // 绘制地面检测范围
+        Gizmos.color = Color.green;
+        Vector3 groundCheckPos = transform.position + Vector3.down * (characterController.height * 0.5f);
+        Gizmos.DrawWireSphere(groundCheckPos, 0.2f);
+
+        // 绘制移动方向
+        if (Application.isPlaying)
+        {
+            Gizmos.color = Color.blue;
+            Gizmos.DrawRay(transform.position, moveDirection * 2f);
+        }
+    }
+
+
+    private void OnTriggerEnter(Collider other)
+    {
+        if (other.CompareTag("Car"))
+        {
+            CurrentCar=other.transform;
+            Debug.Log("可上车");
+           
+        }
+    }
+    private void OnTriggerExit(Collider other)
+    {
+        if (other.CompareTag("Car"))
+        {
+            CurrentCar = null;
+            Debug.Log("无法上车");
+
+        }
+    }
+    void GetCar()
+    {
+        
+        if (CurrentCar != null && Input.GetKeyDown(KeyCode.F))
+        {
+
+            StartCoroutine(EnterCar());
+        }
+    }
+    IEnumerator EnterCar()
+    {
+        CarMove carMove = CurrentCar.GetComponentInParent<CarMove>();
+
+        carMove.Drive(this.gameObject);
+        yield return new WaitForSeconds(0.5f);
+    }
+}
+
